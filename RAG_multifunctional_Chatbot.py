@@ -2,7 +2,6 @@ import openai
 import os
 import pandas as pd
 import warnings
-import fitz  # For PDF parsing
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.prompts import PromptTemplate
@@ -19,14 +18,6 @@ load_dotenv()
 # Set up your OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Function to load and convert PDF to text
-def load_pdf(file_path):
-    doc = fitz.open(file_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
-
 # Function to load and convert Excel to text
 def load_excel(file_path):
     workbook = pd.ExcelFile(file_path)
@@ -41,49 +32,22 @@ def load_excel(file_path):
             text += f"Error reading {sheet_name}: {e}\n\n"
     return text
 
-# Function to split text into smaller chunks
-def split_text(text, max_length=1000):
-    words = text.split()
-    chunks = []
-    chunk = []
-    for word in words:
-        chunk.append(word)
-        if len(" ".join(chunk)) > max_length:
-            chunks.append(" ".join(chunk))
-            chunk = []
-    if chunk:
-        chunks.append(" ".join(chunk))
-    return chunks
-
-# Function to load document based on file extension
-def load_document(file_path):
-    if file_path.endswith('.pdf'):
-        return load_pdf(file_path)
-    elif file_path.endswith('.xlsx'):
-        return load_excel(file_path)
-    else:
-        raise ValueError("Unsupported file type. Please provide a PDF or Excel file.")
-
-# Prompt the user to enter the file path
-print("Welcome to NoteSight AI Assistant!")
-file_path = input("Please enter the file path: (P.S. Enter the file path of the PDF or Excel file, without quotes) ")
+# Hardcoded file path
+file_path = r"D:\Allen Archive\Allen Archives\NEU_academics\the_Internship_trials\Intern_stuff\Dev Work\RAG_LLM_Trials\Duane Gafoor GRADED-9.xlsx"
 
 # Load document
-document_text = load_document(file_path)
-
-# Split document into smaller chunks
-document_chunks = split_text(document_text)
+document_text = load_excel(file_path)
 
 # Create embeddings and vector store for document retrieval
 embeddings = OpenAIEmbeddings(openai_api_key=openai.api_key)
-vector_store = FAISS.from_texts(document_chunks, embeddings)
+vector_store = FAISS.from_texts([document_text], embeddings)
 
 # Define a prompt template
 prompt_template = """
 You are a helpful assistant. 
+Your main purpose is to assist users with questions based on the provided context.
 If you have any questions, feel free to ask.
 If you are unsure of the answer, you can say "I don't know".
-Answer the following question based on the provided context, which shall be an uploaded pdf or excel document.:
 
 {chat_history}
 {context}
