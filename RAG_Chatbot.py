@@ -2,30 +2,22 @@ import openai
 import os
 import pandas as pd
 import warnings
-import fitz  # For PDF parsing
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.chat_models import ChatOpenAI
+from langchain_community.embeddings import OpenAIEmbeddings
 from langchain.prompts import PromptTemplate
 from langchain.memory import ConversationBufferWindowMemory
 from langchain_community.vectorstores import FAISS
 from langchain.schema import HumanMessage
 
 # Ignore specific warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_core")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Set up your OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY")
-
-# Function to load and convert PDF to text
-def load_pdf(file_path):
-    doc = fitz.open(file_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
 
 # Function to load and convert Excel to text
 def load_excel(file_path):
@@ -41,49 +33,34 @@ def load_excel(file_path):
             text += f"Error reading {sheet_name}: {e}\n\n"
     return text
 
-# Function to split text into smaller chunks
-def split_text(text, max_length=1000):
-    words = text.split()
-    chunks = []
-    chunk = []
-    for word in words:
-        chunk.append(word)
-        if len(" ".join(chunk)) > max_length:
-            chunks.append(" ".join(chunk))
-            chunk = []
-    if chunk:
-        chunks.append(" ".join(chunk))
-    return chunks
-
 # Function to load document based on file extension
 def load_document(file_path):
-    if file_path.endswith('.pdf'):
-        return load_pdf(file_path)
-    elif file_path.endswith('.xlsx'):
+    if file_path.endswith('.xlsx'):
         return load_excel(file_path)
     else:
-        raise ValueError("Unsupported file type. Please provide a PDF or Excel file.")
+        raise ValueError("Unsupported file type. Please provide an Excel file.")
 
 # Prompt the user to enter the file path
 print("Welcome to NoteSight AI Assistant!")
-file_path = input("Please enter the file path: (P.S. Enter the file path of the PDF or Excel file, without quotes) ")
 
-# Load document
-document_text = load_document(file_path)
-
-# Split document into smaller chunks
-document_chunks = split_text(document_text)
+while True:
+    try:
+        file_path = input("Please enter the file path: ").strip('\'"')
+        document_text = load_document(file_path)
+        break
+    except ValueError as e:
+        print(e)
 
 # Create embeddings and vector store for document retrieval
 embeddings = OpenAIEmbeddings(openai_api_key=openai.api_key)
-vector_store = FAISS.from_texts(document_chunks, embeddings)
+vector_store = FAISS.from_texts([document_text], embeddings)
 
 # Define a prompt template
 prompt_template = """
 You are a helpful assistant. 
 If you have any questions, feel free to ask.
 If you are unsure of the answer, you can say "I don't know".
-Answer the following question based on the provided context, which shall be an uploaded pdf or excel document.:
+Answer the following question based on the provided context, which shall be an uploaded excel document.:
 
 {chat_history}
 {context}
@@ -132,15 +109,6 @@ class AIAgent:
 
         return response.content
 
-    def run_code(self, code):
-        try:
-            # Execute the code and capture the output
-            local_vars = {}
-            exec(code, {}, local_vars)
-            return local_vars
-        except Exception as e:
-            return str(e)
-
 # Initialize the retriever
 retriever = vector_store.as_retriever()
 
@@ -148,21 +116,10 @@ retriever = vector_store.as_retriever()
 agent = AIAgent(template, llm, conversational_memory, retriever)
 
 while True:
-    question = input("Ask your question or enter 'code' to execute code: ")
+    question = input("Ask your question or input 'exit': ")
     if question.lower() == "exit":
         print("Goodbye!")
         break
-    elif question.lower() == "code":
-        print("Enter your Python code (end with 'END'):")
-        code_lines = []
-        while True:
-            line = input()
-            if line == "END":
-                break
-            code_lines.append(line)
-        code = "\n".join(code_lines)
-        result = agent.run_code(code)
-        print(f"Result: {result}")
     else:
         response = agent.run(question)
         print(f"Assistant: {response}")

@@ -3,11 +3,13 @@ import os
 import pandas as pd
 import warnings
 from dotenv import load_dotenv
+from langchain import hub
+from langchain.agents import AgentExecutor, create_openai_functions_agent
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain.prompts import PromptTemplate
+from langchain_experimental.tools import PythonREPLTool
+from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain.memory import ConversationBufferWindowMemory
 from langchain_community.vectorstores import FAISS
-from langchain.schema import HumanMessage
 
 # Ignore specific warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_core")
@@ -17,6 +19,9 @@ load_dotenv()
 
 # Set up your OpenAI API key
 openai.api_key = os.getenv("OPENAI_API_KEY")
+
+#Setup Tavily API key
+TavilySearchResults.api_key = os.getenv("TAVILY_API_KEY")
 
 # Function to load and convert Excel to text
 def load_excel(file_path):
@@ -32,8 +37,9 @@ def load_excel(file_path):
             text += f"Error reading {sheet_name}: {e}\n\n"
     return text
 
-# Hardcoded file path
-file_path = r"D:\Allen Archive\Allen Archives\NEU_academics\the_Internship_trials\Intern_stuff\Dev Work\RAG_LLM_Trials\Duane Gafoor GRADED-9.xlsx"
+# Prompt the user to enter the file path
+print("Welcome to NoteSight AI Assistant!")
+file_path = input("Please enter the file path: (P.S. Enter the file path of the Excel file, without quotes) ")
 
 # Load document
 document_text = load_excel(file_path)
@@ -42,40 +48,40 @@ document_text = load_excel(file_path)
 embeddings = OpenAIEmbeddings(openai_api_key=openai.api_key)
 vector_store = FAISS.from_texts([document_text], embeddings)
 
-# Define a prompt template
-prompt_template = """
+# Define agent instructions
+instructions = """
 You are a helpful assistant. 
 Your main purpose is to assist users with questions based on the provided context.
-If you have any questions, feel free to ask.
-If you are unsure of the answer, you can say "I don't know".
+You have access to a python REPL and a search tool, which you can use to execute python code and fetch web data.
+If the prompt being asked is not related to the provided context or document, search online for the information.
+If you get an error, debug your code and try again.
+You might know the answer without running any code, but you should still run the code to get the answer.
+If it does not seem like you can write code to answer the question, just return "I don't know" as the answer.
 
 {chat_history}
+Context from document:
 {context}
 Question: {question}
 
 Answer:
 """
+base_prompt = hub.pull("langchain-ai/openai-functions-template")
+prompt = base_prompt.partial(instructions=instructions)
 
-# Create a LangChain prompt template
-template = PromptTemplate(template=prompt_template, input_variables=["question", "chat_history", "context"])
+# Create the agent
+tools = [PythonREPLTool(), TavilySearchResults()]
+agent = create_openai_functions_agent(ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0), tools, prompt)
 
-# Create a ChatOpenAI instance
-llm = ChatOpenAI(model_name="gpt-4-turbo", temperature=0, verbose=True)
-
-# Initialize conversational memory
-conversational_memory = ConversationBufferWindowMemory(
-    memory_key='chat_history',
-    k=7,
-    return_messages=True
-)
+# Create the agent executor
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 # Create a class for the AI agent and define a run method
 class AIAgent:
-    def __init__(self, template, llm, memory, retriever):
-        self.template = template
-        self.llm = llm
+    def __init__(self, memory, retriever, agent_executor):
         self.memory = memory
         self.retriever = retriever
+        self.agent_executor = agent_executor
+        self.code_output = None
 
     def run(self, prompt):
         # Retrieve chat history
@@ -85,48 +91,54 @@ class AIAgent:
         docs = self.retriever.get_relevant_documents(prompt)
         context = "\n".join([doc.page_content for doc in docs])
 
+        # Add code output to context if available
+        if self.code_output:
+            context += f"\n\nCode Output:\n{self.code_output}"
+
         # Format the prompt with chat history and context
-        formatted_prompt = self.template.format(question=prompt, chat_history=chat_history.get('chat_history', ''), context=context)
-        messages = [HumanMessage(content=formatted_prompt)]
+        formatted_prompt = instructions.format(question=prompt, context=context, chat_history=chat_history.get('chat_history', ''))
         
-        response = self.llm(messages)
+        response = self.agent_executor.invoke({"input": formatted_prompt})
+
+        # Ensure the response is a string
+        if isinstance(response, list):
+            response = " ".join(response)
+        elif not isinstance(response, str):
+            response = str(response)
 
         # Update memory with the latest interaction
-        self.memory.save_context({"question": prompt}, {"response": response.content})
+        self.memory.save_context({"question": prompt}, {"response": response})
 
-        return response.content
+        return response
 
     def run_code(self, code):
         try:
-            # Execute the code and capture the output
-            local_vars = {}
-            exec(code, {}, local_vars)
-            return local_vars
+            # Execute the code using the agent executor
+            result = self.agent_executor.invoke({"input": code})
+            self.code_output = result
+            return result
         except Exception as e:
+            self.code_output = str(e)
             return str(e)
+
+# Initialize conversational memory
+conversational_memory = ConversationBufferWindowMemory(
+    memory_key='chat_history',
+    k=10,
+    return_messages=True
+)
 
 # Initialize the retriever
 retriever = vector_store.as_retriever()
 
 # Usage
-agent = AIAgent(template, llm, conversational_memory, retriever)
+agent = AIAgent(conversational_memory, retriever, agent_executor)
 
 while True:
-    question = input("Ask your question or enter 'code' to execute code: ")
+    question = input("Ask your question or enter 'exit' to quit: ")
     if question.lower() == "exit":
         print("Goodbye!")
         break
-    elif question.lower() == "code":
-        print("Enter your Python code (end with 'END'):")
-        code_lines = []
-        while True:
-            line = input()
-            if line == "END":
-                break
-            code_lines.append(line)
-        code = "\n".join(code_lines)
-        result = agent.run_code(code)
-        print(f"Result: {result}")
     else:
         response = agent.run(question)
-        print(f"Assistant: {response}")
+        # print(f"Assistant: {response}")
